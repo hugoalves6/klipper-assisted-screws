@@ -68,7 +68,7 @@ follow the prompts:
 
 | Step | What the printer does | What you do |
 |---|---|---|
-| Start | Homes, raises Z to `stops_z`, parks the nozzle at `stall_x` off the bed | Put the two stops under the X axis ends, then press **Stops inserted** |
+| Start | Homes, raises Z to `stops_z`, parks the nozzle at `stall_x` off the bed | Put the two stops under the X axis ends, then press **Stops inserted**, or **Skip** if the gantry is already aligned |
 | Stops in | Lowers the gantry (both Z motors together) at `stall_current`; the side that reaches its stop first skips steps until the other one arrives. Restores the current and raises `raise_after_stall` | **Remove both stops**, then press **Stops removed** |
 | Levelling | Homes again. Probes the reference screw (screw 1, do not touch it). Then for each screw it probes every `interval` seconds and prints e.g. `Front right: +0.1200 mm -> adjust CCW 00:10` | Turn the screw as advised until it shows `OK (3/3)` |
 | Check | Probes every screw against the reference; repeats the round up to `max_rounds` times | Keep adjusting if asked |
@@ -96,9 +96,10 @@ that the reading moves the right way.
 
 ## Safety
 
-- Before every assisted round, each screw position is checked at a safe nozzle
-  height (`check_z`). If the probe cannot see the bed there, the command stops
-  instead of letting `PROBE` drive the nozzle down to the Z limit.
+- Before every assisted round, the nozzle steps down over each screw from
+  `check_z_start` to `check_z_min` until the probe triggers, instead of letting
+  `PROBE` drive it to the Z limit. If a corner is too low, the guided flow asks
+  you to raise it and retry.
 - Keep the nozzle clean: a blob can touch the bed before the probe triggers.
 - Stay at the printer during the stall step, and start with a low
   `stall_current`.

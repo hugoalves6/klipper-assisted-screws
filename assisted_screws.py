@@ -13,6 +13,13 @@ VAR_HOURS = 'assisted_screws_print_hours'
 VAR_CAL_HOURS = 'assisted_screws_calibrated_hours'
 VAR_CAL_TIME = 'assisted_screws_calibrated_at'
 
+class ScrewUnreachable(Exception):
+    def __init__(self, name, z_min):
+        Exception.__init__(self, "%s: probe not triggered down to z=%.2f; the bed"
+                           " corner is too low or the probe is off the bed"
+                           % (name, z_min))
+        self.name = name
+
 class AssistedScrews:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -45,8 +52,12 @@ class AssistedScrews:
         self.timeout = config.getfloat('timeout', 300., above=0.)
         self.lift = config.getfloat('lift', 2., above=0.)
         self.max_rounds = config.getint('max_rounds', 3, minval=1)
-        # Nozzle height at which the probe must already report TRIGGERED
-        self.check_z = config.getfloat('check_z', 0.8, above=0.)
+        # Each screw is checked by stepping the nozzle down from check_z_start to
+        # check_z_min until the probe reports TRIGGERED
+        self.check_z_start = config.getfloat('check_z_start', 2., above=0.)
+        self.check_z_min = config.getfloat('check_z_min', -1., maxval=self.check_z_start)
+        self.check_step = config.getfloat('check_step', 0.2, above=0.)
+        config.getfloat('check_z', None)  # deprecated, accepted so old configs still load
         # Gantry alignment
         self.gantry_height = config.getfloat('gantry_height', 50., above=0.)
         self.stall_current = config.getfloat('stall_current', 0.25, above=0.)
@@ -174,12 +185,17 @@ class AssistedScrews:
         probe = self.printer.lookup_object('probe')
         for coord, name in self.screws:
             self._goto(coord)
-            self._run("G1 Z%.3f F%d\nM400\nQUERY_PROBE" % (self.check_z, 3 * 60))
-            triggered = probe.get_status(None)['last_query']
+            z = self.check_z_start
+            triggered = False
+            while z >= self.check_z_min - 1e-6:
+                self._run("G1 Z%.3f F%d\nM400\nQUERY_PROBE" % (z, 3 * 60))
+                triggered = probe.get_status(None)['last_query']
+                if triggered:
+                    break
+                z -= self.check_step
             self._run("G1 Z%.3f F%d" % (self.move_z, 15 * 60))
             if not triggered:
-                raise gcmd.error("%s: probe not triggered at z=%.2f, position"
-                                 " is probably off the bed" % (name, self.check_z))
+                raise ScrewUnreachable(name, self.check_z_min)
 
     def _level_round(self, gcmd, tol, confirm, interval, timeout):
         """Reference screw + live loop on every other screw; returns final deviations."""
@@ -267,7 +283,11 @@ class AssistedScrews:
             self._prompt_end()
             gcmd.respond_info("Bed calibration cancelled")
             return
-        if step != 'START' and self.state != 'calibrating':
+        if step == 'SCREWS':
+            # Allowed on its own: skips the gantry alignment
+            self._check_idle(gcmd)
+            self.state = 'calibrating'
+        elif step != 'START' and self.state != 'calibrating':
             raise gcmd.error("No calibration in progress, run ASSISTED_BED_CALIBRATE")
         cancel = ("Cancel", "ASSISTED_BED_CALIBRATE STEP=CANCEL", "error")
         try:
@@ -275,8 +295,8 @@ class AssistedScrews:
                 self._step_start(gcmd, cancel)
             elif step == 'STOPS_IN':
                 self._step_stops_in(gcmd, cancel)
-            elif step == 'STOPS_OUT':
-                self._step_stops_out(gcmd)
+            elif step in ('STOPS_OUT', 'SCREWS'):
+                self._step_screws(gcmd, cancel)
             else:
                 raise gcmd.error("Unknown STEP=%s" % (step,))
         except Exception:
@@ -284,11 +304,14 @@ class AssistedScrews:
             self._prompt_end()
             raise
 
-    def _step_start(self, gcmd, cancel):
+    def _check_idle(self, gcmd):
         ps = self.printer.lookup_object('print_stats', None)
         if ps is not None and ps.get_status(self.reactor.monotonic())['state'] in (
                 'printing', 'paused'):
             raise gcmd.error("Cannot calibrate while a print is active")
+
+    def _step_start(self, gcmd, cancel):
+        self._check_idle(gcmd)
         self.state = 'calibrating'
         self._prompt_end()
         self._run("G28")
@@ -300,7 +323,9 @@ class AssistedScrews:
                      ["Place both stops under the X axis ends, next to each Z lead screw.",
                       "The nozzle is parked off the bed."],
                      [("Stops inserted", "ASSISTED_BED_CALIBRATE STEP=STOPS_IN",
-                       "primary"), cancel])
+                       "primary"),
+                      ("Skip (gantry already aligned)",
+                       "ASSISTED_BED_CALIBRATE STEP=SCREWS", "secondary"), cancel])
 
     def _step_stops_in(self, gcmd, cancel):
         self._prompt_end()
@@ -314,14 +339,24 @@ class AssistedScrews:
                      [("Stops removed", "ASSISTED_BED_CALIBRATE STEP=STOPS_OUT",
                        "primary"), cancel])
 
-    def _step_stops_out(self, gcmd):
+    def _step_screws(self, gcmd, cancel):
         self._prompt_end()
         self._run("G28")
         deviations = []
         for rnd in range(1, self.max_rounds + 1):
             gcmd.respond_info("Screw levelling round %d of %d" % (rnd, self.max_rounds))
-            deviations = self._level_round(gcmd, self.tolerance, self.confirm,
-                                           self.interval, self.timeout)
+            try:
+                deviations = self._level_round(gcmd, self.tolerance, self.confirm,
+                                               self.interval, self.timeout)
+            except ScrewUnreachable as e:
+                # Stay in calibration: the user raises that corner and retries
+                self._run("G1 Z%.3f F%d" % (self.move_z + 10., 15 * 60))
+                self._prompt("Bed corner too low",
+                             [str(e), "Raise that corner (turn its screw to lift the"
+                              " bed a few turns), then retry."],
+                             [("Retry", "ASSISTED_BED_CALIBRATE STEP=SCREWS", "primary"),
+                              cancel])
+                return
             if all(abs(d) <= self.tolerance for _, d in deviations):
                 break
         worst = max(abs(d) for _, d in deviations)
@@ -350,11 +385,14 @@ class AssistedScrews:
     def cmd_ASSISTED_SCREWS_LEVEL(self, gcmd):
         if not self._homed('xyz')[0]:
             raise gcmd.error("Home all axes before ASSISTED_SCREWS_LEVEL")
-        self._level_round(
-            gcmd, gcmd.get_float('TOLERANCE', self.tolerance, above=0.),
-            gcmd.get_int('CONFIRM', self.confirm, minval=1),
-            gcmd.get_float('INTERVAL', self.interval, minval=0.),
-            gcmd.get_float('TIMEOUT', self.timeout, above=0.))
+        try:
+            self._level_round(
+                gcmd, gcmd.get_float('TOLERANCE', self.tolerance, above=0.),
+                gcmd.get_int('CONFIRM', self.confirm, minval=1),
+                gcmd.get_float('INTERVAL', self.interval, minval=0.),
+                gcmd.get_float('TIMEOUT', self.timeout, above=0.))
+        except ScrewUnreachable as e:
+            raise gcmd.error(str(e))
 
     cmd_ASSISTED_GANTRY_STALL_help = ("Lower each Z motor at reduced current onto"
                                       " mechanical stops so both sides match")
