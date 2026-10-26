@@ -34,7 +34,7 @@ of hours.
 ```bash
 cd ~
 git clone https://github.com/<you>/klipper-assisted-screws.git
-./klipper-assisted-screws/install.sh
+bash ./klipper-assisted-screws/install.sh
 ```
 
 The installer links `assisted_screws.py` into `klippy/extras` and adds an
@@ -49,7 +49,7 @@ Copy `assisted_screws.cfg` into your config (or include it), set at least
 sudo systemctl restart klipper
 ```
 
-Uninstall with `./klipper-assisted-screws/install.sh -u`.
+Uninstall with `bash ./klipper-assisted-screws/install.sh -u`.
 
 ### Block printing while calibrating
 
