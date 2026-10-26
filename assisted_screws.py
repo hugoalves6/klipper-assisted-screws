@@ -231,11 +231,12 @@ class AssistedScrews:
         try:
             for s in Z_STEPPERS:
                 self._run("SET_TMC_CURRENT STEPPER=%s CURRENT=%.3f" % (s, current))
-            for s in Z_STEPPERS:
-                gcmd.respond_info("Lowering %s up to %.1f mm onto its stop"
-                                  % (s, distance))
-                self._run("FORCE_MOVE STEPPER=%s DISTANCE=%.3f VELOCITY=%.1f"
-                          % (s, -distance, velocity))
+            # Lower both motors together so the gantry never tilts; the side
+            # that reaches its stop first skips steps until the other arrives
+            gcmd.respond_info("Lowering the gantry up to %.1f mm onto the stops"
+                              % (distance,))
+            self._run("SET_KINEMATIC_POSITION Z=%.3f\nG90\nG1 Z0 F%d\nM400"
+                      % (distance, velocity * 60))
         finally:
             for s in Z_STEPPERS:
                 self._run("SET_TMC_CURRENT STEPPER=%s CURRENT=%.3f" % (s, original[s]))

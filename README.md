@@ -69,7 +69,7 @@ follow the prompts:
 | Step | What the printer does | What you do |
 |---|---|---|
 | Start | Homes, raises Z to `stops_z`, parks the nozzle at `stall_x` off the bed | Put the two stops under the X axis ends, then press **Stops inserted** |
-| Stops in | Lowers each Z motor at `stall_current` until it rests on its stop, restores the current, raises `raise_after_stall` | **Remove both stops**, then press **Stops removed** |
+| Stops in | Lowers the gantry (both Z motors together) at `stall_current`; the side that reaches its stop first skips steps until the other one arrives. Restores the current and raises `raise_after_stall` | **Remove both stops**, then press **Stops removed** |
 | Levelling | Homes again. Probes the reference screw (screw 1, do not touch it). Then for each screw it probes every `interval` seconds and prints e.g. `Front right: +0.1200 mm -> adjust CCW 00:10` | Turn the screw as advised until it shows `OK (3/3)` |
 | Check | Probes every screw against the reference; repeats the round up to `max_rounds` times | Keep adjusting if asked |
 | Finish | Runs `Z_TILT_ADJUST`, saves the calibration, back to `ready` | Close the prompt |
